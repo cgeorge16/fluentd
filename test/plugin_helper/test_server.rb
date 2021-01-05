@@ -796,6 +796,18 @@ class ServerPluginHelperTest < Test::Unit::TestCase
     }
   end
 
+  def create_client_options
+    {
+      private_key_length: 2048,
+      country: 'US',
+      state: 'CA',
+      locality: 'Mountain View',
+      common_name: 'client.testing.fluentd.org',
+      expiration: 30 * 86400,
+      digest: :sha256,
+    }
+  end
+
   def write_cert_and_key(cert_path, cert, key_path, key, passphrase)
     File.open(cert_path, "w"){|f| f.write(cert.to_pem) }
     # Write the secret key (raw or encrypted by AES256) in PEM format
@@ -817,6 +829,12 @@ class ServerPluginHelperTest < Test::Unit::TestCase
 
   def create_server_pair_signed_by_ca(ca_cert_path, ca_key_path, ca_key_passphrase, cert_path, private_key_path, passphrase)
     cert, key, _ = CertUtil.cert_option_generate_server_pair_by_ca(ca_cert_path, ca_key_path, ca_key_passphrase, create_server_options)
+    write_cert_and_key(cert_path, cert, private_key_path, key, passphrase)
+    return cert
+  end
+
+  def create_client_pair_signed_by_ca(ca_cert_path, ca_key_path, ca_key_passphrase, cert_path, private_key_path, passphrase)
+    cert, key, _ = CertUtil.cert_option_generate_client_pair_by_ca(ca_cert_path, ca_key_path, ca_key_passphrase, create_client_options)
     write_cert_and_key(cert_path, cert, private_key_path, key, passphrase)
     return cert
   end
@@ -846,7 +864,7 @@ class ServerPluginHelperTest < Test::Unit::TestCase
     File.chmod(0600, cert_path, private_key_path)
   end
 
-  def open_tls_session(addr, port, version: Fluent::TLS::DEFAULT_VERSION, verify: true, cert_path: nil, selfsigned: true, hostname: nil)
+  def open_tls_session(addr, port, version: Fluent::TLS::DEFAULT_VERSION, verify: true, cert_path: nil, selfsigned: true, hostname: nil, client_tls_options: nil)
     context = OpenSSL::SSL::SSLContext.new
     context.set_params({})
     if verify
@@ -862,6 +880,10 @@ class ServerPluginHelperTest < Test::Unit::TestCase
       context.cert_store = cert_store
       if !hostname
         context.verify_hostname = false # In test code, using hostname to be connected is very difficult
+      end
+      if client_tls_options
+        context.cert = OpenSSL::X509::Certificate.new(File.read(client_tls_options[:cert_path]))
+        context.key = OpenSSL::PKey::read(File.read(client_tls_options[:private_key_path]), nil)
       end
     else
       context.verify_mode = OpenSSL::SSL::VERIFY_NONE
@@ -1800,6 +1822,70 @@ class ServerPluginHelperTest < Test::Unit::TestCase
 
     test 'can keep connections alive for tcp/tls if keepalive specified' do
       # pend "not implemented yet"
+    end
+  end
+
+  sub_test_case 'Extract data from client cert' do
+    setup do
+      @certs_dir = File.join(TMP_DIR, "tls_certs")
+      @server_cert_dir = File.join(@certs_dir, "server")
+      @client_cert_dir = File.join(@certs_dir, "client")
+      FileUtils.rm_rf @certs_dir
+      FileUtils.mkdir_p @server_cert_dir
+      FileUtils.mkdir_p @client_cert_dir
+
+    end
+
+    test 'creates a tls server to get client CN and SAN' do
+      ca_key_passphrase = nil
+      ca_cert_path = File.join(@certs_dir, "ca_cert.pem")
+      ca_key_path = File.join(@certs_dir, "ca.key.pem")
+      create_ca_pair_signed_by_self(ca_cert_path, ca_key_path, ca_key_passphrase)
+
+      private_key_passphrase = nil
+      cert_path = File.join(@server_cert_dir, "cert.pem")
+      private_key_path = File.join(@certs_dir, "server.key.pem")
+      create_server_pair_signed_by_ca(ca_cert_path, ca_key_path, ca_key_passphrase, cert_path, private_key_path, private_key_passphrase)
+
+      client_private_key_passphrase = nil
+      client_cert_path = File.join(@client_cert_dir, "cert.pem")
+      client_private_key_path = File.join(@certs_dir, "client.key.pem")
+      create_client_pair_signed_by_ca(ca_cert_path, ca_key_path, ca_key_passphrase, client_cert_path, client_private_key_path, client_private_key_passphrase)
+
+      tls_options = {
+        protocol: :tls,
+        version: :'TLSv1_2',
+        ciphers: 'ALL:!aNULL:!eNULL:!SSLv2',
+        insecure: false,
+        cert_path: cert_path,
+        private_key_path: private_key_path,
+        ca_path: ca_cert_path,
+      }
+      tls_options[:private_key_passphrase] = private_key_passphrase if private_key_passphrase
+
+      client_tls_options = {
+        cert_path: client_cert_path,
+        private_key_path: client_private_key_path
+      }
+      received = ""
+      client_cert_cn = ""
+      client_cert_san = ""
+      @d.server_create_tls(:s, PORT, tls_options: tls_options) do |data, conn|
+        received << data
+        client_cert_cn = conn.client_cert_cn
+        client_cert_san = conn.client_cert_san
+      end
+      3.times do
+        open_tls_session('127.0.0.1', PORT, cert_path: ca_cert_path, client_tls_options:  client_tls_options) do |sock|
+          sock.puts "yay"
+          sock.puts "foo"
+        end
+      end
+      waiting(10){ sleep 0.1 until received.bytesize == 24 }
+      assert_equal 3, received.scan("yay\n").size
+      assert_equal 3, received.scan("foo\n").size
+      assert_equal "client.testing.fluentd.org", client_cert_cn
+      assert_equal "DNS:client.testing.fluentd.org", client_cert_san
     end
   end
 end

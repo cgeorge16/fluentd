@@ -124,6 +124,10 @@ module Fluent
         cert.issuer = issuer
         cert.subject  = subject
 
+        ef = OpenSSL::X509::ExtensionFactory.new
+        ef.subject_certificate = cert
+        cert.add_extension(ef.create_extension("subjectAltName", "DNS:#{opts[:common_name]}", false))
+
         return cert, key
       end
 
@@ -157,6 +161,23 @@ module Fluent
           ['nsCertType', 'server'],
           ['keyUsage', 'digitalSignature,keyEncipherment'],
           ['extendedKeyUsage', 'serverAuth']
+        ])
+
+        cert.sign(ca_key, generate_opts[:digest].to_s)
+        return cert, key, nil
+      end
+
+      def cert_option_generate_client_pair_by_ca(ca_cert_path, ca_key_path, ca_key_passphrase, generate_opts)
+        ca_key = OpenSSL::PKey::read(File.read(ca_key_path), ca_key_passphrase)
+        ca_cert = OpenSSL::X509::Certificate.new(File.read(ca_cert_path))
+        cert, key = cert_option_generate_pair(generate_opts, ca_cert.subject)
+        raise "BUG: certificate digest algorithm not set" unless generate_opts[:digest]
+
+        cert_option_add_extensions(cert, [
+          ['basicConstraints', 'CA:FALSE'],
+          ['nsCertType', 'client,server,email'],
+          ['keyUsage', 'digitalSignature,keyEncipherment'],
+          ['extendedKeyUsage', 'clientAuth']
         ])
 
         cert.sign(ca_key, generate_opts[:digest].to_s)

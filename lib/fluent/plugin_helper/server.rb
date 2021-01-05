@@ -401,6 +401,14 @@ module Fluent
           @peeraddr[1]
         end
 
+        def client_cert_cn
+          nil
+        end
+
+        def client_cert_san
+          nil
+        end
+
         def send(data, flags = 0)
           @sock.send(data, flags)
         end
@@ -463,6 +471,40 @@ module Fluent
           super("tls", sock, ENABLED_EVENTS)
           @peeraddr = (@sock.to_io.peeraddr rescue PEERADDR_FAILED)
           @buffer = ''
+          @peercert = @sock.peer_cert
+          @client_cert_cn = extract_client_cert_cn
+          @client_cert_san = extract_client_cert_san
+        end
+
+        def client_cert_cn
+          @client_cert_cn
+        end
+
+        def client_cert_san
+          @client_cert_san
+        end
+
+        def extract_client_cert_cn
+          if @peercert
+            cert = OpenSSL::X509::Certificate.new(@peercert)
+            subject = cert.subject
+            subject.to_a.select { |oid,_,_| oid == 'CN'}.first[1]
+          else
+            nil
+          end
+        end
+
+        def extract_client_cert_san
+          if @peercert
+            cert = OpenSSL::X509::Certificate.new(@peercert)
+            extensions = cert.extensions
+            san = extensions.select { |ext|
+              extension = ext.to_h
+              extension['oid'] == 'subjectAltName'}
+            san.first.value rescue nil
+          else
+            nil
+          end
         end
 
         def write(data)
@@ -668,6 +710,10 @@ module Fluent
 
           def to_io
             @_handler_socket.to_io
+          end
+
+          def peer_cert
+            @_handler_socket.peer_cert
           end
 
           def data(&callback)

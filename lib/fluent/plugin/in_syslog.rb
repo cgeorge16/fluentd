@@ -96,6 +96,11 @@ module Fluent::Plugin
     desc 'The field name of the facility.'
     config_param :facility_key, :string, default: nil
 
+    desc 'The field name of CN of the client certificates.'
+    config_param :client_cert_cn, :string, default: nil
+    desc 'The field name of SAN of the client certificates.'
+    config_param :client_cert_san, :string, default: nil
+
     desc "The max bytes of message"
     config_param :message_length_limit, :size, default: 2048
 
@@ -207,6 +212,8 @@ module Fluent::Plugin
       record = {"unmatched_line" => data}
       record[@source_address_key] = sock.remote_addr if @source_address_key
       record[@source_hostname_key] = sock.remote_host if @source_hostname_key
+      record[@client_cert_cn] = sock.client_cert_cn if @client_cert_cn
+      record[@client_cert_san] = sock.client_cert_san if @client_cert_san
       emit("#{@tag}.unmatched", Fluent::EventTime.now, record)
     end
 
@@ -243,6 +250,8 @@ module Fluent::Plugin
         record[@facility_key] = facility if @facility_key
         record[@source_address_key] = sock.remote_addr if @source_address_key
         record[@source_hostname_key] = sock.remote_host if @source_hostname_key
+        record[@client_cert_cn] = sock.client_cert_cn if @client_cert_cn
+        record[@client_cert_san] = sock.client_cert_san if @client_cert_san
 
         tag = "#{@tag}.#{facility}.#{severity}"
         emit(tag, time, record)
